@@ -1,0 +1,266 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+jobs:
+  linux:
+    name: Ubuntu 24.04 / GCC / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            trt_rtx_url: https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.6/TensorRT-RTX-1.6.1.120-Linux-x86_64-cuda-13.4-Release-external.tar.zst
+            artifact: ubuntu-24.04-x86_64-release
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            trt_rtx_url: https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.6/TensorRT-RTX-1.6.1.120-Linux-aarch64-cuda-13.4-Release-external.tar.zst
+            artifact: ubuntu-24.04-aarch64-release
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: nvidia/cuda:13.2.1-devel-ubuntu24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            cmake \
+            git \
+            ninja-build \
+            python3 \
+            zstd
+          nvcc --version
+
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Restore compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: linux-${{ matrix.arch }}-release
+          max-size: 1G
+          variant: ccache
+          install: binary
+
+      - name: Cache CMake dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: linux-${{ matrix.arch }}-cmake-deps-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tests/CMakeLists.txt') }}
+
+      - name: Configure and build
+        shell: bash
+        run: |
+          cmake \
+            -S . \
+            -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCUDAToolkit_ROOT=/usr/local/cuda \
+            -DPython3_EXECUTABLE=/usr/bin/python3 \
+            -DTRT_RTX_DOWNLOAD_URL="${{ matrix.trt_rtx_url }}" \
+            -DTRT_RTX_EP_PRODUCTION_BUILD=OFF \
+            -DBUILD_TESTS=ON \
+            -DBUILD_EXAMPLES=OFF
+          cmake --build build --parallel 4
+
+#      - name: Run unit test executable (optional without a GPU)
+#        id: unittests
+#        continue-on-error: true
+#        shell: bash
+#        run: |
+#          ./build/tests/unittests \
+#            --gtest_output=xml:"${{ github.workspace }}/build/gtest-results-linux.xml"
+#
+#      - name: Run CTest suite (optional without a GPU)
+#        id: ctest
+#        continue-on-error: true
+#        shell: bash
+#        run: |
+#          ctest \
+#            --test-dir build \
+#            --output-on-failure \
+#            --output-junit "${{ github.workspace }}/build/test-results-linux.xml"
+
+      - name: Upload Linux artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: warn
+          path: |
+            build/libonnxruntime_providers_nv_tensorrt_rtx.so
+            build/gtest-results-linux.xml
+            build/test-results-linux.xml
+
+  windows:
+    name: Windows / MSVC 2026 / Ninja / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025-vs2026
+            msvc_component: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+            cuda_version: "13.2"
+            trt_rtx_url: https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.6/TensorRT-RTX-1.6.1.120-Windows-amd64-cuda-13.4-Release-external.zip
+            artifact: windows-server-2025-x64-release
+          - arch: arm64
+            runner: windows-11-vs2026-arm
+            msvc_component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+            cuda_version: "13.4"
+            trt_rtx_url: https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.6/TensorRT-RTX-1.6.1.120-Windows-arm64-cuda-13.4-Release-external.zip
+            artifact: windows-11-arm64-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Restore compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: windows-${{ matrix.arch }}-release
+          max-size: 1G
+          variant: ccache
+          install: binary
+
+      - name: Install CUDA 13.2 on x64
+        if: matrix.arch == 'x64'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        id: cuda-toolkit
+        with:
+          cuda: '13.2.0'
+
+      - name: Install CUDA 13.4 on ARM64
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "cuda_13.4.0_windows_arm64.exe"
+          Invoke-WebRequest `
+            -Uri "https://packages.nvidia.com/prerelease/cuda/13.4.0/local_installers/cuda_13.4.0_windows_arm64.exe" `
+            -OutFile $installer
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList "-s", "crt_13.4", "nvcc_13.4", "cudart_13.4", "nvml_dev_13.4" `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "CUDA installer exited with code $($process.ExitCode)"
+          }
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4"
+          $requiredFiles = @(
+            "bin\nvcc.exe",
+            "include\cuda_runtime.h",
+            "include\crt\host_config.h",
+            "include\crt\host_defines.h"
+          )
+          foreach ($relativePath in $requiredFiles) {
+            if (-not (Test-Path (Join-Path $cudaPath $relativePath))) {
+              throw "CUDA installation is missing $relativePath"
+            }
+          }
+          Remove-Item -LiteralPath $installer
+          & (Join-Path $cudaPath "bin\nvcc.exe") --version
+
+      - name: Cache CMake dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: windows-${{ matrix.arch }}-cmake-deps-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'tests/CMakeLists.txt') }}
+
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstallPath = & $vswhere `
+            -latest `
+            -products * `
+            -requires ${{ matrix.msvc_component }} `
+            -property installationPath
+          if (-not $vsInstallPath) {
+            throw "Visual Studio with the MSVC ${{ matrix.arch }} toolchain was not found"
+          }
+          $devShellModule = Join-Path $vsInstallPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Import-Module $devShellModule
+          Enter-VsDevShell `
+            -VsInstallPath $vsInstallPath `
+            -SkipAutomaticLocation `
+            -DevCmdArguments "-arch=${{ matrix.arch }} -host_arch=${{ matrix.arch }}"
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+            throw "MSVC compiler was not added to PATH by Enter-VsDevShell"
+          }
+          if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
+            throw "Ninja was not found on the runner"
+          }
+          ninja --version
+
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
+          cmake `
+            -S . `
+            -B build `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache `
+            "-DCUDAToolkit_ROOT=$cudaPath" `
+            "-DTRT_RTX_DOWNLOAD_URL=${{ matrix.trt_rtx_url }}" `
+            -DTRT_RTX_EP_PRODUCTION_BUILD=OFF `
+            -DBUILD_TESTS=ON `
+            -DBUILD_EXAMPLES=OFF
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          cmake --build build --parallel 4
+
+#      - name: Run unit test executable (optional without a GPU)
+#        id: unittests
+#        continue-on-error: true
+#        shell: pwsh
+#        run: |
+#          & "${{ github.workspace }}\build\tests\unittests.exe" `
+#            "--gtest_output=xml:${{ github.workspace }}\build\gtest-results-windows.xml"
+#          exit $LASTEXITCODE
+#
+#      - name: Run CTest suite (optional without a GPU)
+#        id: ctest
+#        continue-on-error: true
+#        shell: pwsh
+#        run: |
+#          ctest `
+#            --test-dir build `
+#            --output-on-failure `
+#            --output-junit "${{ github.workspace }}\build\test-results-windows.xml"
+
+      - name: Upload Windows artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: warn
+          path: |
+            build/onnxruntime_providers_nv_tensorrt_rtx.dll
+            build/onnxruntime_providers_nv_tensorrt_rtx.lib
+            build/onnxruntime_providers_nv_tensorrt_rtx.pdb
+            build/gtest-results-windows.xml
+            build/test-results-windows.xml

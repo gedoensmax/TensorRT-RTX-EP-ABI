@@ -85,6 +85,9 @@ if(WIN32)
         REQUIRED)
     copy_to_test_bin("${TRT_RTX_DLL}")
     copy_to_test_bin("${TRT_ONNX_PARSER_DLL}")
+    foreach(_trt_rtx_runtime_dll IN LISTS TRTRTX_RUNTIME_DLLS)
+        copy_to_test_bin("${_trt_rtx_runtime_dll}")
+    endforeach()
 else()
     copy_to_test_bin("${TRT_RTX_LIB}")
     copy_to_test_bin("${TRT_ONNX_PARSER_LIB}")
@@ -103,7 +106,14 @@ if(WIN32)
         get_filename_component(_cudart_name "${_cudart_loc}" NAME_WE)
         find_file(CUDART_DLL
             NAMES "${_cudart_name}.dll" "cudart64_${CUDAToolkit_VERSION_MAJOR}.dll" "cudart64_12.dll" "cudart64.dll"
-            HINTS "${CUDAToolkit_BIN_DIR}" "${_cudart_dir}" "${_cudart_dir}/../bin"
+            HINTS
+                "${CUDAToolkit_BIN_DIR}"
+                "${CUDAToolkit_BIN_DIR}/x64"
+                "${CUDAToolkit_BIN_DIR}/arm64"
+                "${_cudart_dir}"
+                "${_cudart_dir}/../bin"
+                "${_cudart_dir}/../../bin/x64"
+                "${_cudart_dir}/../../bin/arm64"
             REQUIRED)
         copy_to_test_bin("${CUDART_DLL}")
     endif()
@@ -198,6 +208,8 @@ add_custom_command(TARGET unittests POST_BUILD
     COMMENT "Copying TRT RTX EP DLL to test directory"
 )
 
-# Registers each TEST()/TEST_F() as a separate CTest test case
-gtest_discover_tests(unittests)
+# Discover tests when CTest runs instead of executing the GPU-linked binary as
+# a post-build step. This keeps compilation usable on CI runners without an
+# NVIDIA driver; the explicitly optional CTest step reports runtime failures.
+gtest_discover_tests(unittests DISCOVERY_MODE PRE_TEST)
 

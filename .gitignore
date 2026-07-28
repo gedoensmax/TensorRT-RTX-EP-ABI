@@ -1,5 +1,8 @@
 # Build directories
 build/
+docs/_build/
+docs/_generated/
+__pycache__/
 out/
 cmake-build-*/
 
