@@ -41,6 +41,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates \
             cmake \
+            curl \
             git \
             ninja-build \
             python3 \
