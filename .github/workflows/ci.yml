@@ -167,7 +167,7 @@ jobs:
             -OutFile $installer
           $process = Start-Process `
             -FilePath $installer `
-            -ArgumentList "-s", "crt_13.4", "nvcc_13.4", "cudart_13.4", "nvml_dev_13.4" `
+            -ArgumentList "-s", "crt_13.4", "nvcc_13.4", "cudart_13.4", "cuda_profiler_api_13.4", "nvml_dev_13.4" `
             -Wait `
             -PassThru
           if ($process.ExitCode -ne 0) {
@@ -177,6 +177,7 @@ jobs:
           $requiredFiles = @(
             "bin\nvcc.exe",
             "include\cuda_runtime.h",
+            "include\cuda_profiler_api.h",
             "include\crt\host_config.h",
             "include\crt\host_defines.h"
           )
